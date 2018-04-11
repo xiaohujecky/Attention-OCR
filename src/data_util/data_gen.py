@@ -7,19 +7,33 @@ from collections import Counter
 import pickle as cPickle
 import random, math
 from data_util.bucketdata import BucketData
+from data_util.voc_keys import alphabet 
+alphabet=[e.encode('utf-8') for e in alphabet]
+alphabet2idx_map={}
+alphabet2lex_map={}
+for a_idx, lex in enumerate(alphabet):
+    alphabet2idx_map[lex] = a_idx + 4
+    alphabet2lex_map[u'%d'%(a_idx + 4)] = lex 
 
-
+alphabet2idx_map[u'BOS'] = 1
+alphabet2idx_map[u'EOS'] = 2
+alphabet2idx_map[u'UNK'] = 3
+alphabet2lex_map[u'1'] = u'BOS' 
+alphabet2lex_map[u'2'] = u'EOS'
+alphabet2lex_map[u'3'] = u'UNK'
 
 class DataGen(object):
     GO = 1
+    BOS = 1
     EOS = 2
+    UNK = 3
 
     def __init__(self,
                  data_root, annotation_fn,
                  evaluate = False,
                  valid_target_len = float('inf'),
                  img_width_range = (12, 320),
-                 word_len = 30):
+                 word_len = 40):
         """
         :param data_root:
         :param annotation_fn:
@@ -90,7 +104,8 @@ class DataGen(object):
                     #    ef.write(img_path + '\n')
         self.clear()
 
-    def read_data(self, img_path, lex):
+    # DEPRECATED : the original function of read_data
+    def read_data_org(self, img_path, lex, dprecated=True):
         assert 0 < len(lex) < self.bucket_specs[-1][1]
         # L = R * 299/1000 + G * 587/1000 + B * 114/1000
         with open(os.path.join(self.data_root, img_path), 'rb') as img_file:
@@ -129,6 +144,51 @@ class DataGen(object):
 
         return img_bw, word
 
+
+    def read_data(self, img_path, lex_file):
+        #assert 0 < len(lex) < self.bucket_specs[-1][1]
+        # L = R * 299/1000 + G * 587/1000 + B * 114/1000
+        with open(os.path.join(self.data_root, img_path), 'rb') as img_file:
+            img = Image.open(img_file)
+            w, h = img.size
+            aspect_ratio = float(w) / float(h)
+            if aspect_ratio < float(self.bucket_min_width) / self.image_height:
+                img = img.resize(
+                    (self.bucket_min_width, self.image_height),
+                    Image.ANTIALIAS)
+            elif aspect_ratio > float(
+                    self.bucket_max_width) / self.image_height:
+                img = img.resize(
+                    (self.bucket_max_width, self.image_height),
+                    Image.ANTIALIAS)
+            elif h != self.image_height:
+                img = img.resize(
+                    (int(aspect_ratio * self.image_height), self.image_height),
+                    Image.ANTIALIAS)
+
+            img_bw = img.convert('L')
+            img_bw = np.asarray(img_bw, dtype=np.uint8)
+            img_bw = img_bw[np.newaxis, :]
+
+        # 'a':97, '0':48
+        word = [self.GO]
+        with open(lex_file, 'r') as f :
+            lex = unicode(f.read().strip(), 'utf-8')
+            #print "{} {}".format(lex.encode('utf-8'), len(lex))
+            assert 0 < len(lex) < self.bucket_specs[-1][1]
+            for c in lex:
+                utf_lex = c.encode('utf-8') 
+                if utf_lex not in alphabet2idx_map:
+                    print("WARNING : UNKNOW CHARACTER {}".format(utf_lex))
+                    utf_lex = u'UNK'
+                word.append(alphabet2idx_map[utf_lex])
+        word.append(self.EOS)
+        word = np.array(word, dtype=np.int32)
+        # word = np.array( [self.GO] +
+        # [ord(c) - 97 + 13 if ord(c) > 96 else ord(c) - 48 + 3
+        # for c in lex] + [self.EOS], dtype=np.int32)
+
+        return img_bw, word
 
 def test_gen():
     print('testing gen_valid')
