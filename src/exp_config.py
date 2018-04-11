@@ -35,4 +35,5 @@ class ExpConfig:
                         # (Encoder number of hidden units will be ATTN_NUM_HIDDEN*ATTN_NUM_LAYERS)
     LOAD_MODEL = False
     OLD_MODEL_VERSION = False
-    TARGET_VOCAB_SIZE = 26+10+3 # 0: PADDING, 1: GO, 2: EOS, >2: 0-9, a-z
+    #TARGET_VOCAB_SIZE = 26+10+3 # 0: PADDING, 1: GO, 2: EOS, >2: 0-9, a-z
+    TARGET_VOCAB_SIZE = 7335+2*26+10+4 # 0: PADDING, 1: GO, 2: EOS, 3: UNKNOW, >3: 0-9, a-z, A-Z, >66: chinese character
