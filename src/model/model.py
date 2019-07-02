@@ -33,13 +33,13 @@ class Model(object):
             data_base_dir,
             output_dir,
             batch_size,
+            train_sample_size,
             initial_learning_rate,
             num_epoch,
             steps_per_checkpoint,
-            target_vocab_size, 
-            model_dir, 
+            model_dir,
             target_embedding_size,
-            attn_num_hidden, 
+            attn_num_hidden,
             attn_num_layers,
             clip_gradients,
             max_gradient_norm,
@@ -47,23 +47,25 @@ class Model(object):
             load_model,
             gpu_id,
             use_gru,
+            target_vocab_size=9000,
             evaluate=False,
             valid_target_length=float('inf'),
             reg_val = 0 ):
-            
-        gpu_device_id = '/gpu:' + str(gpu_id)
+
+        #gpu_device_id = '/gpu:' + str(gpu_id)
+        gpu_device_ids = ['/gpu:' + gpu for gpu in str(gpu_id).split(',')]
         if not os.path.exists(model_dir):
             os.makedirs(model_dir)
         logging.info('loading data')
         # load data
         if phase == 'train':
             self.s_gen = DataGen(
-                data_base_dir, data_path, valid_target_len=valid_target_length, evaluate=False)
+                data_base_dir, data_path, train_sample_size=train_sample_size, valid_target_len=valid_target_length, evaluate=False)
         else:
             batch_size = 1
             self.s_gen = DataGen(
                 data_base_dir, data_path, evaluate=True)
-
+        target_vocab_size = self.s_gen.get_target_voc_size()
 
         #logging.info('valid_target_length: %s' %(str(valid_target_length)))
         logging.info('phase: %s' % phase)
@@ -93,7 +95,7 @@ class Model(object):
         # variables
         self.img_data = tf.placeholder(tf.float32, shape=(None, 1, 32, None), name='img_data')
         self.zero_paddings = tf.placeholder(tf.float32, shape=(None, None, 512), name='zero_paddings')
-        
+
         self.decoder_inputs = []
         self.encoder_masks = []
         self.target_weights = []
@@ -105,11 +107,11 @@ class Model(object):
                                                     name="decoder{0}".format(i)))
             self.target_weights.append(tf.placeholder(tf.float32, shape=[None],
                                                     name="weight{0}".format(i)))
-      
+
         self.reg_val = reg_val
         self.sess = session
         self.evaluate = evaluate
-        self.steps_per_checkpoint = steps_per_checkpoint 
+        self.steps_per_checkpoint = steps_per_checkpoint
         self.model_dir = model_dir
         self.output_dir = output_dir
         self.buckets = buckets
@@ -121,7 +123,7 @@ class Model(object):
         self.visualize = visualize
         self.learning_rate = initial_learning_rate
         self.clip_gradients = clip_gradients
-       
+
         if phase == 'train':
             self.forward_only = False
         elif phase == 'test':
@@ -129,73 +131,76 @@ class Model(object):
         else:
             assert False, phase
 
-        with tf.device(gpu_device_id):
-            cnn_model = CNN(self.img_data, True) #(not self.forward_only))
-            self.conv_output = cnn_model.tf_output()
-            self.concat_conv_output = tf.concat(axis=1, values=[self.conv_output, self.zero_paddings])
-
-            self.perm_conv_output = tf.transpose(self.concat_conv_output, perm=[1, 0, 2])
-
-        with tf.device(gpu_device_id):
-            self.attention_decoder_model = Seq2SeqModel(
-                encoder_masks = self.encoder_masks,
-                encoder_inputs_tensor = self.perm_conv_output, 
-                decoder_inputs = self.decoder_inputs,
-                target_weights = self.target_weights,
-                target_vocab_size = target_vocab_size, 
-                buckets = buckets,
-                target_embedding_size = target_embedding_size,
-                attn_num_layers = attn_num_layers,
-                attn_num_hidden = attn_num_hidden,
-                forward_only = self.forward_only,
-                use_gru = use_gru)
-
-
-
-
-        if not self.forward_only:
-
-            self.updates = []
-            self.summaries_by_bucket = []
+        reuse=False
+        for gpu_device_id in gpu_device_ids:
             with tf.device(gpu_device_id):
-                params = tf.trainable_variables()
-                # Gradients and SGD update operation for training the model.
-                opt = tf.train.AdadeltaOptimizer(learning_rate=initial_learning_rate)
-                for b in xrange(len(buckets)):
-                    if self.reg_val > 0:
-                        reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
-                        logging.info('Adding %s regularization losses', len(reg_losses))
-                        logging.debug('REGULARIZATION_LOSSES: %s', reg_losses)
-                        loss_op = self.reg_val * tf.reduce_sum(reg_losses) + self.attention_decoder_model.losses[b]
-                    else:
-                        loss_op = self.attention_decoder_model.losses[b]
+                cnn_model = CNN(self.img_data, True) #(not self.forward_only))
+                reuse=True
+                self.conv_output = cnn_model.tf_output()
+                self.concat_conv_output = tf.concat(axis=1, values=[self.conv_output, self.zero_paddings])
 
-                    gradients, params = zip(*opt.compute_gradients(loss_op, params))
-                    if self.clip_gradients:
-                        gradients, _ = tf.clip_by_global_norm(gradients, max_gradient_norm)
-                    # Add summaries for loss, variables, gradients, gradient norms and total gradient norm.
-                    summaries = []
-                    '''
-                    for gradient, variable in gradients:
-                        if isinstance(gradient, tf.IndexedSlices):
-                            grad_values = gradient.values
+                self.perm_conv_output = tf.transpose(self.concat_conv_output, perm=[1, 0, 2])
+
+            with tf.device(gpu_device_id):
+                self.attention_decoder_model = Seq2SeqModel(
+                    encoder_masks = self.encoder_masks,
+                    encoder_inputs_tensor = self.perm_conv_output,
+                    decoder_inputs = self.decoder_inputs,
+                    target_weights = self.target_weights,
+                    target_vocab_size = target_vocab_size,
+                    buckets = buckets,
+                    target_embedding_size = target_embedding_size,
+                    attn_num_layers = attn_num_layers,
+                    attn_num_hidden = attn_num_hidden,
+                    forward_only = self.forward_only,
+                    use_gru = use_gru)
+
+
+
+
+            if not self.forward_only:
+
+                self.updates = []
+                self.summaries_by_bucket = []
+                with tf.device(gpu_device_id):
+                    params = tf.trainable_variables()
+                    # Gradients and SGD update operation for training the model.
+                    opt = tf.train.AdadeltaOptimizer(learning_rate=initial_learning_rate)
+                    for b in xrange(len(buckets)):
+                        if self.reg_val > 0:
+                            reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
+                            logging.info('Adding %s regularization losses', len(reg_losses))
+                            logging.debug('REGULARIZATION_LOSSES: %s', reg_losses)
+                            loss_op = self.reg_val * tf.reduce_sum(reg_losses) + self.attention_decoder_model.losses[b]
                         else:
-                            grad_values = gradient
-                        summaries.append(tf.summary.histogram(variable.name, variable))
-                        summaries.append(tf.summary.histogram(variable.name + "/gradients", grad_values))
-                        summaries.append(tf.summary.scalar(variable.name + "/gradient_norm",
-                                             tf.global_norm([grad_values])))
-                    '''
-                    summaries.append(tf.summary.scalar("loss", loss_op))
-                    summaries.append(tf.summary.scalar("total_gradient_norm", tf.global_norm(gradients)))
-                    all_summaries = tf.summary.merge(summaries)
-                    self.summaries_by_bucket.append(all_summaries)
-                    # update op - apply gradients
-                    update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-                    with tf.control_dependencies(update_ops):
-                        self.updates.append(opt.apply_gradients(zip(gradients, params), global_step=self.global_step))
+                            loss_op = self.attention_decoder_model.losses[b]
 
-        self.saver_all = tf.train.Saver(tf.all_variables())
+                        gradients, params = zip(*opt.compute_gradients(loss_op, params))
+                        if self.clip_gradients:
+                            gradients, _ = tf.clip_by_global_norm(gradients, max_gradient_norm)
+                        # Add summaries for loss, variables, gradients, gradient norms and total gradient norm.
+                        summaries = []
+                        '''
+                        for gradient, variable in gradients:
+                            if isinstance(gradient, tf.IndexedSlices):
+                                grad_values = gradient.values
+                            else:
+                                grad_values = gradient
+                            summaries.append(tf.summary.histogram(variable.name, variable))
+                            summaries.append(tf.summary.histogram(variable.name + "/gradients", grad_values))
+                            summaries.append(tf.summary.scalar(variable.name + "/gradient_norm",
+                                                 tf.global_norm([grad_values])))
+                        '''
+                        summaries.append(tf.summary.scalar("loss", loss_op))
+                        summaries.append(tf.summary.scalar("total_gradient_norm", tf.global_norm(gradients)))
+                        all_summaries = tf.summary.merge(summaries)
+                        self.summaries_by_bucket.append(all_summaries)
+                        # update op - apply gradients
+                        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+                        with tf.control_dependencies(update_ops):
+                            self.updates.append(opt.apply_gradients(zip(gradients, params), global_step=self.global_step))
+
+        self.saver_all = tf.train.Saver(tf.all_variables(), max_to_keep=100)
 
         ckpt = tf.train.get_checkpoint_state(model_dir)
         if ckpt and load_model:
@@ -221,7 +226,7 @@ class Model(object):
                 logging.info('Compare word based on edit distance.')
             num_correct = 0
             num_total = 0
-            for batch in self.s_gen.gen(self.batch_size):
+            for batch in self.s_gen.gen_multi_source_data(self.batch_size):
                 # Get a batch and make a step.
                 start_time = time.time()
                 bucket_id = batch['bucket_id']
@@ -232,7 +237,7 @@ class Model(object):
                 encoder_masks = batch['encoder_mask']
                 file_list = batch['filenames']
                 real_len = batch['real_len']
-               
+
                 grounds = [a for a in np.array([decoder_input.tolist() for decoder_input in decoder_inputs]).transpose()]
                 _, step_loss, step_logits, step_attns = self.step(encoder_masks, img_data, zero_paddings, decoder_inputs, target_weights, bucket_id, self.forward_only)
                 curr_step_time = (time.time() - start_time)
@@ -282,7 +287,7 @@ class Model(object):
                 for epoch in range(self.num_epoch):
 
                    logging.info('Generating first batch)')
-                   for i,batch in enumerate(self.s_gen.gen(self.batch_size)):
+                   for i,batch in enumerate(self.s_gen.gen_multi_source_data(self.batch_size)):
                         # Get a batch and make a step.
                         num_total = 0
                         num_correct = 0
@@ -374,7 +379,7 @@ class Model(object):
         if len(target_weights) != decoder_size:
             raise ValueError("Weights length must be equal to the one in bucket,"
                     " %d != %d." % (len(target_weights), decoder_size))
-        
+
         # Input feed: encoder inputs, decoder inputs, target_weights, as provided.
         input_feed = {}
         input_feed[self.img_data.name] = img_data
@@ -388,11 +393,11 @@ class Model(object):
             except Exception as e:
                 pass
                 #ipdb.set_trace()
-    
+
         # Since our targets are decoder inputs shifted by one, we need one more.
         last_target = self.decoder_inputs[decoder_size].name
         input_feed[last_target] = np.zeros([self.batch_size], dtype=np.int32)
-    
+
         # Output feed: depends on whether we do a backward step or not.
         if not forward_only:
             output_feed  = [self.updates[bucket_id],  # Update Op that does SGD.
@@ -407,7 +412,7 @@ class Model(object):
                 output_feed.append(self.attention_decoder_model.outputs[bucket_id][l])
             if self.visualize:
                 output_feed += self.attention_decoder_model.attention_weights_histories[bucket_id]
-    
+
         outputs = self.sess.run(output_feed, input_feed)
         if not forward_only:
             return outputs[2], outputs[1], outputs[3:(3+self.buckets[bucket_id][1])], None  # Gradient norm summary, loss, no outputs, no attentions.
